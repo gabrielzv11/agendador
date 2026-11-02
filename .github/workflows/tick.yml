@@ -1,0 +1,58 @@
+name: tick
+run-name: tick
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Tick
+        env:
+          TICK_URL: ${{ secrets.TICK_URL }}
+          TICK_SECRET: ${{ secrets.TICK_SECRET }}
+        run: |
+          if [ -z "$TICK_URL" ] || [ -z "$TICK_SECRET" ]; then
+            echo "::error::Segredos ausentes."
+            exit 1
+          fi
+          body="$RUNNER_TEMP/body.json"
+          for call in 1 2 3 4 5 6; do
+            status=$(curl -s -o "$body" -w '%{http_code}' --max-time 330 \
+              -X POST -H "authorization: Bearer $TICK_SECRET" "$TICK_URL" 2>/dev/null) || status=000
+            if [ "$status" != 200 ]; then
+              rm -f "$body"
+              echo "::error::Falhou (HTTP $status)."
+              exit 1
+            fi
+            done=$(jq -r '.done' "$body" 2>/dev/null || echo false)
+            errors=$(jq -r '.errors // 0' "$body" 2>/dev/null || echo 1)
+            rm -f "$body"
+            if [ "$errors" != 0 ]; then
+              echo "::error::Falhou."
+              exit 1
+            fi
+            [ "$done" = true ] && { echo "ok"; exit 0; }
+          done
+          echo "::error::Não terminou."
+          exit 1
+
+      - name: Keepalive
+        if: github.event_name == 'schedule' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%u)" = 1 ]; then
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/tick.yml/enable" > /dev/null
+          fi
